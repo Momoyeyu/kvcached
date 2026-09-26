@@ -426,9 +426,9 @@ class ElasticAllocatorPatch(VersionAwarePatch, BasePatch):
                         return
 
                     if self.is_not_in_free_group:
-                        page_ids = torch.unique(free_index // self.page_size)
+                        page_ids = torch.unique(free_index.cpu() // self.page_size)
                         try:
-                            indices: list[int] = page_ids.cpu().numpy().tolist()
+                            indices: list[int] = page_ids.numpy().tolist()
                         except Exception:
                             indices = list(page_ids)
                         return self.kvcached_allocator.free(indices)

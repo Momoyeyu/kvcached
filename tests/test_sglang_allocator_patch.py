@@ -228,6 +228,63 @@ def test_alloc_extend_kernel(
         assert kwargs["max_num_extend_tokens"] == 8
 
 
+def test_free_moves_index_to_cpu_before_unique(monkeypatch):
+    """Regression: the paged allocator's free path must move free_index to CPU
+    before the page-id math so allocator bookkeeping does not couple to CUDA
+    device execution."""
+    _install_fake_torch(monkeypatch)
+    _install_fake_sglang_utils(monkeypatch)
+
+    import torch as torch_mod  # the fake module installed above
+
+    freed = []
+
+    class RecordingAllocator(FakeKVCachedAllocator):
+        def free(self, indices):
+            freed.append(indices)
+
+    class CPUOnlyIndexTensor(FakeTensor):
+        def __init__(self, data, device):
+            super().__init__(data=list(data), shape=(len(data),), device=device)
+
+        def numel(self):
+            return len(self.data)
+
+        def cpu(self):
+            return CPUOnlyIndexTensor(self.data, "cpu")
+
+        def __floordiv__(self, other):
+            assert self.device == "cpu", "page-id math must run on CPU"
+            return CPUOnlyIndexTensor([x // other for x in self.data], "cpu")
+
+        def numpy(self):
+            return self
+
+        def tolist(self):
+            return list(self.data)
+
+    torch_mod.unique = lambda t: CPUOnlyIndexTensor(sorted(set(t.data)), t.device)
+
+    alloc_mod = _make_allocator_module(
+        FakeTritonKernel(FakeKernelFn(("a",)))
+    )
+    assert ElasticAllocatorPatch().inject_elastic_paged_allocator(alloc_mod) is True
+
+    class KVC:
+        kvcached_allocator = RecordingAllocator()
+
+    allocator = alloc_mod.ElasticPagedTokenToKVPoolAllocator(
+        size=64,
+        page_size=4,
+        dtype=object(),
+        device="cuda:0",
+        kvcache=KVC(),
+    )
+    allocator.free(CPUOnlyIndexTensor([4, 5, 8, 9, 10], "cuda:0"))
+
+    assert freed == [[1, 2]]
+
+
 def test_swa_allocator_uses_elastic_sub_allocators(monkeypatch):
     allocator_mod: Any = types.ModuleType("sglang.srt.mem_cache.allocator")
 
