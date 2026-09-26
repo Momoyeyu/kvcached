@@ -10,6 +10,7 @@ from typing import List
 from setuptools import find_packages, setup
 from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
+from setuptools.command.editable_wheel import editable_wheel
 from setuptools.command.install import install
 
 try:
@@ -182,9 +183,31 @@ class DevelopWithPth(develop):
         print(f"Installed {PTH_FILE} for editable install to: {pth_dst}")
 
 
+# Custom editable_wheel for PEP 660 installs (pip install -e .):
+# the develop command above is not invoked on this path, so the .pth file must
+# be written into the editable wheel itself to land in site-packages.
+class EditableWheelWithPth(editable_wheel):
+    def _select_strategy(self, name, tag, build_lib):
+        strategy = super()._select_strategy(name, tag, build_lib)
+
+        class WithAutopatchPth:
+            def __call__(self, wheel, files, mapping):
+                strategy(wheel, files, mapping)
+                wheel.write(os.path.join(SCRIPT_PATH, PTH_FILE), PTH_FILE)
+
+            def __enter__(self):
+                return strategy.__enter__()
+
+            def __exit__(self, *exc):
+                return strategy.__exit__(*exc)
+
+        return WithAutopatchPth()
+
+
 cmdclass["build_py"] = BuildPyWithPth
 cmdclass["install"] = InstallWithPth
 cmdclass["develop"] = DevelopWithPth
+cmdclass["editable_wheel"] = EditableWheelWithPth
 
 setup(
     packages=find_packages(),
